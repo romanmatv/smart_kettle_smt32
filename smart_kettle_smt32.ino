@@ -1,18 +1,20 @@
+#include <stdio.h>
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <EEPROM.h>
+//#include <EEPROM.h>
 #include <OneButton.h>
 #include <OneWireSTM.h>
-#include <stdio.h>
 #include <DS1302.h>
 #include <Time.h>
+
 DS1302 rtc(PB14, PB15, PB13);
 #define TEN_H PA8 //Мощный ТЭН
 #define TEN_L PA9 //Слабый ТЭН
 #define POMP PA10 //Помпа
 
+//Стандартные настройки
 float current_temp = 0; //Текущая температура
 byte need_temp = 90; //Поддерживаемая температура
 byte temp_minus = 5; //Нижняя граница поддерживаемой температуры
@@ -20,9 +22,9 @@ byte temp_plus = 5; //Верхняя граница поддерживаемой
 bool force_enabled = false; //Принудительное поддержание температуры
 bool force_disabled = false; //Принудительное отключение поддержания температуры
 bool boiling_on_start = false; //Кипичение при включении
-bool boiling_on_lowtemp = false; //Кипичение при резком снижении температуры
+bool boiling_on_lowtemp = true; //Кипичение при резком снижении температуры
 #define temp_boiling 98 //Тепература кипичения
-byte boilint_time = 10; //Кол-во секунд кипичения
+int boilint_time = 10; //Кол-во секунд кипичения
 //Статусы
 #define DISABLED 0 //Отключен
 #define POTTING 1 //Поддержка температуры
@@ -31,9 +33,10 @@ byte now_status = DISABLED; //Текущий статус
 
 byte boiling_tm = boilint_time;
 
-bool debug = true; //Вывод дебаг информации в Серийный порт if(debug)
+bool debug = false; //Вывод дебаг информации в Серийный порт if(debug)
+bool enableEEPROM = false; //Включение EEPROMa
 
-struct shoud_iteam {
+struct Shoud_iteam {
   byte week = 200;
   byte h_start;
   byte m_start;
@@ -41,19 +44,15 @@ struct shoud_iteam {
   byte m_stop;
 };
 
-shoud_iteam Shudle [100] = {
-    {8, 7, 0, 9, 0},
-    {8, 20, 0, 23, 59},
-    {9, 9, 0, 23, 59}
-};
+Shoud_iteam Shudle [100];
 
-// Setup a new OneButton on pin B11.  
+// Setup a new OneButton on pin B11.
 OneButton btn_pomp(PB11, true);
-// Setup a new OneButton on pin B10.  
+// Setup a new OneButton on pin B10.
 OneButton btn_heating(PB10, true);
 
-double temps[50];
-byte countTemps = 50;
+float temps[100];
+byte countTemps = 100;
 byte iTemp = 0;
 
 OneWire ds(PB12); //Датчик температуры на пине B12
@@ -151,71 +150,134 @@ Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 int timer_secs = 0; //Переменная для тайминга
 
 void setup() {
-  Serial.begin(9600);
-  pinMode(TEN_H, OUTPUT);
-  digitalWrite(TEN_H, HIGH);
-  pinMode(TEN_L, OUTPUT); 
-  digitalWrite(TEN_L, HIGH);
-  pinMode(POMP, OUTPUT); 
-  digitalWrite(POMP, HIGH);
-  /*
-   * Настраиваем экранчик
-   */
-   display.begin(SSD1306_SWITCHCAPVCC);
-   display.display();
-   display.clearDisplay();
-   display.cp437(true);
+    Serial.begin(9600);
+    pinMode(TEN_H, OUTPUT);
+    digitalWrite(TEN_H, HIGH);
+    pinMode(TEN_L, OUTPUT);
+    digitalWrite(TEN_L, HIGH);
+    pinMode(POMP, OUTPUT);
+    digitalWrite(POMP, HIGH);
+    /*
+    * Настраиваем экранчик
+    */
+    display.begin(SSD1306_SWITCHCAPVCC);
+    display.display();
+    display.clearDisplay();
+    display.cp437(true);
 
-  //Читка настроек из EEPROM
-  /* Принудительное поддержание/отключение
-   *  Индекс: 0
-   *  Значения: 2 - отключение, 1 - включение, иное - ни то ни то
-   *
-  if (EEPROM[0]==1){
-    force_enabled = true;
-    force_disabled = false;
-    now_status = POTTING;
-  }else if (EEPROM[0]==2){
-    force_enabled = false;
-    force_disabled = true;
-  }else{
-    force_enabled = false;
-    force_disabled = false;
-  }
-  now_status = DISABLED;
-  /*
-  /* Кипичение при включении
-   *  Индекс: 1
-   *  Значения: 1 или 0
-   *
-   if (EEPROM[1]==1){
-    boiling_on_start = true;
-    now_status = BOILING;
-   }
-   /* Кипичение при резком снижении температуры
-   *  Индекс: 2
-   *  Значения: 1 или 0
-   *
-   if (EEPROM[2]==1){
-    boiling_on_lowtemp = true;
-   }
+    now_status = DISABLED;
 
-   /* Поддерживаемая температура
-   *  Индекс: 3
-   *  Значения: Byte 0-255
-   *
-   if (EEPROM[3]>20){
-    need_temp = EEPROM[3];
-   }
-   */
-/* Пример задания кнопок
-  button1.attachClick(click1); //Клик
-  button1.attachDoubleClick(doubleclick1); //Двойной клик
-  
-  button1.attachLongPressStart(longPressStart1); //Начало долгого зажатия
-  button1.attachLongPressStop(longPressStop1); //Окончания долгого зажатия
-  button1.attachDuringLongPress(longPress1); //Видимо то, что происходит во время зажатия btn_pomp_onLongStart
-  */
+    Shudle[0].week=8;
+    Shudle[0].h_start=7;
+    Shudle[0].m_start=0;
+    Shudle[0].h_stop=9;
+    Shudle[0].m_stop=0;
+
+    Shudle[1].week=8;
+    Shudle[1].h_start=20;
+    Shudle[1].m_start=0;
+    Shudle[1].h_stop=23;
+    Shudle[1].m_stop=59;
+
+    Shudle[2].week=9;
+    Shudle[2].h_start=9;
+    Shudle[2].m_start=0;
+    Shudle[2].h_stop=23;
+    Shudle[2].m_stop=59;
+/*
+    if (enableEEPROM){
+        need_temp = EEPROM.read(0x10);
+        if (need_temp>100){
+            //Запись стандартных настроек в EEPROM
+            EEPROM.init();
+            EEPROM.PageBase0 = 0x801F000;
+            EEPROM.PageBase1 = 0x801F800;
+            EEPROM.PageSize  = 0x400;
+            EEPROM.format();
+
+            need_temp = 90;
+
+            EEPROM.write(0x10, 90);
+            EEPROM.write(0x11, temp_minus);
+            EEPROM.write(0x12, temp_plus);
+            EEPROM.write(0x13, boiling_on_start);
+            EEPROM.write(0x14, boilint_time);
+            EEPROM.write(0x15, boiling_on_lowtemp);
+            EEPROM.write(0x16, 0);
+
+            //Пока нельзя
+            //EEPROM.put(7, Shudle);
+       }else{
+            //Читка настроек из EEPROM
+
+            /* Поддерживаемая температура
+            *  Индекс: 0
+            *  Значения: Byte 0-255
+            *
+            need_temp = EEPROM.read(0x10);
+
+            /* Нижняя граница поддерживаемой температуры
+            *  Индекс: 1
+            *  Значения: Byte 0-255
+            *
+            temp_minus = EEPROM.read(0x11);
+
+            /* Верхняя граница поддерживаемой температуры
+            *  Индекс: 2
+            *  Значения: Byte 0-255
+            *
+            if (EEPROM.read(0x12)<50){
+             temp_plus = EEPROM.read(0x12);
+            }
+
+            /*
+            /* Кипичение при включении
+             *  Индекс: 3
+             *  Значения: 1 или 0
+             *
+             if (EEPROM.read(0x13)==1){
+              boiling_on_start = true;
+             }
+
+             /*
+             /* Секунд кипячения
+              *  Индекс: 4
+              *  Значения: 1 или 0
+              *
+             boilint_time = EEPROM.read(0x14);
+             boiling_tm = boilint_time;
+
+             /* Кипичение при резком снижении температуры
+             *  Индекс: 5
+             *  Значения: 1 или 0
+             *
+             if (EEPROM.read(0x15)==1){
+                boiling_on_lowtemp = true;
+             }
+
+             /* Принудительное поддержание/отключение
+             *  Индекс: 6
+             *  Значения: 0 - ничего, 1 - принуд вкл, 2 - принуд откл
+             *
+             if (EEPROM.read(0x16)==1){
+                 force_enabled = true;
+                 force_disabled = false;
+             }else if (EEPROM.read(0x16)==2){
+                 force_enabled = false;
+                 force_disabled = true;
+             }else{
+                 force_enabled = false;
+                 force_disabled = false;
+             }
+
+             /* Принудительное поддержание/отключение
+             *  Индекс: 7
+             *  Значения: Массив структуры shoud_iteam
+             * Пока нельзя
+             *
+             //EEPROM.get(7, Shudle);
+       }
+    }*/
 
 //Кнопка помпы
   btn_pomp.attachClick(btn_pomp_onClick);
@@ -233,6 +295,12 @@ void setup() {
 //Включаем статус кипичения при старте, если оно включено
   if(boiling_on_start){
     now_status = BOILING;
+  }
+
+  current_temp = getTemperature();
+
+  for (int i=0; i<countTemps;i++){
+      temps[i] = current_temp;
   }
 }
 
@@ -252,26 +320,30 @@ void loop() {
   if (now_status == BOILING){
     //Кипячение
     ten_boaling_func();
+    if (boiling_on_lowtemp)
+        chekTemps(false); //автокипячение
   }else{
     if (!force_disabled){
       if (force_enabled){
         now_status = POTTING;
       }else{
-        if (inShudle()) 
-          now_status = POTTING; 
-        else 
+        if (inShudle())
+          now_status = POTTING;
+        else
           now_status = DISABLED;
       }
     }else{
       now_status = DISABLED;
     }
 
+    if (boiling_on_lowtemp)
+        chekTemps(boiling_on_lowtemp); //автокипячение
+
     if (now_status == POTTING){
       //Включаем тэн поддержания
       ten_l_func();
-      if (boiling_on_lowtemp) chekTemps(); //Если включено автокипичение при снижении температуры - следим за температурой и кипятим при большом перепаде
     }
-    
+
     if (now_status == DISABLED){
       //Отключаем все тэны
       digitalWrite(TEN_L, HIGH);
@@ -297,12 +369,13 @@ void ten_l_func(){
         if (((float)need_temp+temp_plus) <= current_temp){
             digitalWrite(TEN_L, HIGH); //Если текукщая температура больше необходимой с макс порогом, то выключаем тэн
         }else{
+            /*
             digitalWrite(TEN_L, LOW); //Иначе включаем
             if (current_temp<60){ //Если температура менее 60, то включаем еще и сильный тэн
                 digitalWrite(TEN_H, LOW);
             }else{
                 digitalWrite(TEN_H, HIGH);
-            }
+            }*/
         }
     }
 }
@@ -334,27 +407,27 @@ void ten_boaling_func(){
 }
 
 /*
-Функция выявления, находится ли текущее время в расписании
-struct shoud_iteam {
-  byte week;
-  byte h_start;
-  byte m_start;
-  byte h_stop;
-  byte m_stop;
-};
+ * Функция валидации элемента расписания
+ */
+bool validShudleIteam(Shoud_iteam iteam){
+    if (iteam.week>9) return false;
+    if (iteam.h_start>23) return false;
+    if (iteam.h_stop>23) return false;
+    if (iteam.m_start>59) return false;
+    if (iteam.m_stop>59) return false;
+    return true;
+}
 
-shoud_iteam Shudle [100] = {
-    {8, 7, 0, 9, 0},
-    {8, 20, 0, 23, 59},
-    {9, 9, 0, 23, 59}
-};
+/*
+Функция выявления, находится ли текущее время в расписании
 */
 bool inShudle(){
   Time t = rtc.time();
+  int i = 0;
   int week = dayAsInt(t.day);
-  for (int i=0; i<101; i++){
+  for (i = 0; i<100; i++){
       bool chek = false;
-      if (Shudle[i].week<10){
+      if (validShudleIteam(Shudle[i])){
           //t.hr, t.min
           if (Shudle[i].week==0){ //Во все дни
               chek = true;
@@ -365,21 +438,35 @@ bool inShudle(){
           }else if(Shudle[i].week==9){ //В выходные
               if (week>5 && week<8) chek = true;
           }
-      }
-      //Проверили день недели, если он совпал, то проверяем вхождение в время
-      if (chek){
-          if (t.hr>=Shudle[i].h_start &&
-              t.min>=Shudle[i].m_start &&
-              t.hr<=Shudle[i].h_stop &&
-              t.min<=Shudle[i].m_stop
-              ) return true; //и провсто возвращаем тру, если входит
+
+          //Проверили день недели, если он совпал, то проверяем вхождение в время
+          if (chek){
+              if (t.hr>=Shudle[i].h_start &&
+                  t.min>=Shudle[i].m_start &&
+                  t.hr<=Shudle[i].h_stop &&
+                  t.min<=Shudle[i].m_stop
+                  ){
+                  if(debug)Serial.println("Попали в:");
+                  if(debug)Serial.println(String(i));
+                  if(debug)Serial.print(Shudle[i].week);
+                  if(debug)Serial.print(',');
+                  if(debug)Serial.print(Shudle[i].h_start);
+                  if(debug)Serial.print(',');
+                  if(debug)Serial.print(Shudle[i].m_start);
+                  if(debug)Serial.print(',');
+                  if(debug)Serial.print(Shudle[i].h_stop);
+                  if(debug)Serial.print(',');
+                  if(debug)Serial.println(Shudle[i].m_stop);
+                  return true; //и провсто возвращаем тру, если входит
+              }
+          }
       }
   }
   return false; //все циклы пройдены, вхождений не найдено, возвращаем фолз
 }
 
-bool addShudle(shoud_iteam iteam){
-    for (int i=0; i<101; i++){
+bool addShudle(Shoud_iteam iteam){
+    for (int i=0; i<100; i++){
         if(Shudle[i].week>10){
             Shudle[i] = iteam;
             return true;
@@ -392,16 +479,16 @@ bool delShudle(int adress, bool withmoove = false){
         //С передвижением всех последующих
         if (adress<0 || adress>100) return false;
         if (adress<100){
-            for (i=adress; i<100; i++){
+            for (int i=adress; i<100; i++){
                 Shudle[i] = Shudle[i+1];
             }
-            Shudle[100].week = 200;
+            Shudle[99].week = 200;
         }else{
-            Shudle[100].week = 200;
+            Shudle[99].week = 200;
         }
     }else{
         //Просто флажим, как не используемую
-        Shudle[i].week = 200;
+        Shudle[adress].week = 200;
     }
 }
 
@@ -438,7 +525,11 @@ void btn_heating_onStopPress(){
 }
 
 void btn_heating_onDoubleClick(){
-    now_status = BOILING;
+    if (now_status!=BOILING){
+        now_status = BOILING;
+    }else{
+        now_status = DISABLED;
+    }
     if(debug)Serial.println("Включено кипячение");
 }
 
@@ -451,7 +542,7 @@ float getTemperature(){
   ds.select(addr);
   ds.write(0x44, 1);
   ds.reset();
-  ds.select(addr);    
+  ds.select(addr);
   ds.write(0xBE);
   for ( i = 0; i < 9; i++) {
     data[i] = ds.read();
@@ -473,31 +564,42 @@ void clearComBuffer(){
 void readCommands(){
     String cmd = "";
     char val = Serial.read();
+    byte i=0;
     while (val != ';'){
         cmd += val;
         val = Serial.read();
+        i++;
+        //Защита от пропущенной ;
+        if (i>200) {
+            clearComBuffer();
+            break;
+        }
     }
 
-    if (cmd = "settime"){
+    if (cmd == "settime"){
         setTimeCom(); //Устанавливаем время
-    }else if (cmd = "gettime"){
+    }else if (cmd == "gettime"){
         Serial.println(getStrTime(false, true)); //Получаем время
-    }else if (cmd = "getstatus"){
+    }else if (cmd == "getstatus"){
         getStatusCom(); //Получаем статус
-    }else if (cmd = "setforce"){
+    }else if (cmd == "setforce"){
         setForceCom(); //Устанавливаем Форсированные вкл/выкл
-    }else if (cmd = "getforce"){
+    }else if (cmd == "getforce"){
         getForceCom(); //Получаем Форсированные вкл/выкл
-    }else if (cmd = "addshudle"){
+    }else if (cmd == "addshudle"){
         addShudleCom(); //Добавляем раписание
-    }else if (cmd = "updshudle"){
+    }else if (cmd == "updshudle"){
         updShudleCom(); //Обновляем расписание по индексу
-    }else if (cmd = "getshudle"){
+    }else if (cmd == "getshudle"){
         getShudleCom(); //Получаем все расписание
-    }else if (cmd = "getsettings"){
+    }else if (cmd == "getsettings"){
         getSettingsCom(); //Получаем все настройки
-    }else if (cmd = "setsettings"){
+    }else if (cmd == "setsettings"){
         setSettingsCom(); //Устанавливаем настройки
+    }else if (cmd == "boiling"){
+        btn_heating_onDoubleClick(); //Ставим статус кипичения
+    }else if (cmd == "eeprom"){
+        getEeprom();
     }
     clearComBuffer(); //Чистим оставшийся мусор
 }
@@ -550,7 +652,7 @@ void setTimeCom(){
   val_ar[0] = '0';
   val_ar[1] = Serial.read();
   String daywek = val_ar;
-    
+
   Time::Day dayw;
   switch (daywek.toInt()) {
     case 7:  dayw = Time::kSunday; break;
@@ -562,7 +664,7 @@ void setTimeCom(){
     case 6:  dayw = Time::kSaturday; break;
     default: dayw = Time::kMonday; break;
   }
-  
+
   if(debug)Serial.print("Год: ");
   if(debug)Serial.println(yearr);
   if(debug)Serial.print("Месяц: ");
@@ -639,28 +741,187 @@ void getForceCom(){
 }
 
 void addShudleCom(){
-
+    Shoud_iteam i = readShoudIteam();
+    if (addShudle(i)){
+        Serial.print(i.week);
+        Serial.print(',');
+        Serial.print(i.h_start);
+        Serial.print(',');
+        Serial.print(i.m_start);
+        Serial.print(',');
+        Serial.print(i.h_stop);
+        Serial.print(',');
+        Serial.print(i.m_stop);
+        Serial.println(';');
+    }else{
+        Serial.println("false");
+    }
 }
 
 void updShudleCom(){
+    for (int i=0; i<100; i++){
+        Shudle[i] = readShoudIteam();
+    }
+    getShudleCom();
+}
 
+void updShudleIdxCom(){
+    char val = Serial.read();
+    String idx = "";
+    while(val!=','){
+        idx += val;
+        val = Serial.read();
+    }
+    Shoud_iteam iteam = readShoudIteam();
+    Shudle[idx.toInt()] = iteam;
+
+    Serial.print(iteam.week);
+    Serial.print(',');
+    Serial.print(iteam.h_start);
+    Serial.print(',');
+    Serial.print(iteam.m_start);
+    Serial.print(',');
+    Serial.print(iteam.h_stop);
+    Serial.print(',');
+    Serial.print(iteam.m_stop);
+    Serial.println(';');
+}
+
+Shoud_iteam readShoudIteam(){
+    char val = Serial.read();
+    String tmp = "";
+    Shoud_iteam siteam;
+    int values[5];
+    int j = 0;
+    while (val!=';') {
+        if (val==','){
+            values[j] = tmp.toInt();
+            tmp = "";
+            j++;
+        }else{
+            tmp += val;
+        }
+        //
+        val = Serial.read();
+    }
+    values[4] = tmp.toInt();
+    siteam.week = values[0];
+    siteam.h_start = values[1];
+    siteam.m_start = values[2];
+    siteam.h_stop = values[3];
+    siteam.m_stop = values[4];
+    return siteam;
 }
 
 void getShudleCom(){
-
+    for (byte i=0; i<100; i++){
+        Serial.print(Shudle[i].week);
+        Serial.print(',');
+        Serial.print(Shudle[i].h_start);
+        Serial.print(',');
+        Serial.print(Shudle[i].m_start);
+        Serial.print(',');
+        Serial.print(Shudle[i].h_stop);
+        Serial.print(',');
+        Serial.print(Shudle[i].m_stop);
+        Serial.print(';');
+    }
+    Serial.println();
 }
 
 /*
  * Получаем настройки
  * Значения перечисляются по порядку
- *
+ *  Температура поддержания
+ *  Темп_минус
+ *  Темп_плюс
+ *  Кипячен. по включению
+ *  Секунд кипячения
+ *  Кипячение по снижению температуры
  */
 void getSettingsCom(){
-
+    Serial.print(need_temp);
+    Serial.print(';');
+    Serial.print(temp_minus);
+    Serial.print(';');
+    Serial.print(temp_plus);
+    Serial.print(';');
+    Serial.print(boiling_on_start);
+    Serial.print(';');
+    Serial.print(boilint_time);
+    Serial.print(';');
+    Serial.println(boiling_on_lowtemp);
 }
 
+/*
+ * Устанавливаем настройки
+ * Значения перечисляются по порядку
+ *  Температура поддержания - 2 байта
+ *  Темп_минус - 1 байт
+ *  Темп_плюс - 1 байт
+ *  Кипячен. по включению - 1 байт
+ *  Секунд кипячения - 2 байта
+ *  Кипячение по снижению температуры - 1 байт
+ */
 void setSettingsCom(){
+    char tmp[2];
 
+    String ne_temp;
+    String t_minus;
+    String t_plus;
+    String boil_start;
+    String boil_secs;
+    String boil_low;
+    //Читаем из порта
+    tmp[0] = Serial.read();
+    tmp[1] = Serial.read();
+    ne_temp = tmp;
+    tmp[0] = '0';
+    tmp[1] = Serial.read();
+    t_minus = tmp;
+    tmp[0] = '0';
+    tmp[1] = Serial.read();
+    t_plus = tmp;
+    tmp[0] = '0';
+    tmp[1] = Serial.read();
+    boil_start = tmp;
+    tmp[0] = Serial.read();
+    tmp[1] = Serial.read();
+    boil_secs = tmp;
+    tmp[0] = '0';
+    tmp[1] = Serial.read();
+    boil_low = tmp;
+    //Записываем в переменные
+    need_temp = ne_temp.toInt();
+    temp_minus = t_minus.toInt();
+    temp_plus = t_plus.toInt();
+    boiling_on_start = boil_start.toInt();
+    boilint_time = boil_secs.toInt();
+    boiling_tm = boilint_time;
+    boiling_on_lowtemp = boil_low.toInt();
+    //Записываем в EEPROM
+    if (enableEEPROM){
+        /*
+        //Температура
+        EEPROM.update(0x10, need_temp);
+        //Температура_минус
+        EEPROM.update(0x11, temp_minus);
+        //Температура_плюс
+        EEPROM.update(0x12, temp_plus);
+        //Кипячение по включению
+        EEPROM.update(0x13, boiling_on_start);
+        //Секунд кипячения
+        EEPROM.update(0x14, boilint_time);
+        //Кипячение при снижении
+        EEPROM.update(0x15, boiling_on_lowtemp);*/
+    }
+    //Возвращаем полученые значения для валидации
+    Serial.print(ne_temp);
+    Serial.print(t_minus);
+    Serial.print(t_plus);
+    Serial.print(boil_start);
+    Serial.print(boil_secs);
+    Serial.println(boil_low);
 }
 
 void printDisplay(){
@@ -679,16 +940,16 @@ void printDisplay(){
     stat = "Кипячение";
   }else{
     if (force_disabled){
-      stat = "Принуд. Откл.";
+      stat = "Принуд. ОТКЛ.";
     }else{
       if (force_enabled){
-        stat = "Принуд. Вкл.";
+        stat = "Принуд. ВКЛ.";
       }else{
         stat = "Распис.";
-        if (now_status==0){
-          stat += ", ОТКЛ";
-        }else{
+        if (now_status == POTTING){
           stat += ", ВКЛ";
+        }else{
+          stat += ", ОТКЛ";
         }
       }
     }
@@ -696,34 +957,55 @@ void printDisplay(){
   display.println(utf8rus(stat));
   display.print(utf8rus("Авто кипячение: "));
   if (boiling_on_lowtemp){
-      display.print(utf8rus("ВЛК"));
+      display.print(utf8rus("ВКЛ."));
   }else{
-      display.print(utf8rus("ВЫКЛ"));
+      display.print(utf8rus("ОТКЛ."));
   }
   display.display();
   delay(100);
 }
 
 /*
-double temps[50];
-byte countTemps = 50;
+float temps[100];
+byte countTemps = 100;
 byte iTemp = 0;
  */
-void chekTemps(){
-  temps[iTemp] = current_temp;
-  iTemp++;
-  if (iTemp>=countTemps) iTemp = 0;
-  //if (iTemp>10){
-    double ab;
-    for (byte i=0; i<countTemps;i++){
-      if(i%2){
-        ab += temps[iTemp];
-      }else{
-        ab -= temps[iTemp];
+void chekTemps(bool setboil){
+    //Записываем значения каждую секунду
+    //Time t = rtc.time();
+    //if (timer_secs != t.sec){
+      //timer_secs = t.sec;
+
+      temps[iTemp] = current_temp;
+      iTemp++;
+      if (iTemp>=countTemps) iTemp = 0;
+
+      float ab;
+      for (byte i=0; i<countTemps;i++){
+          //Serial.println(String(temps[i]));
+        if(i%2){
+          ab += temps[i];
+        }else{
+          ab -= temps[i];
+        }
       }
-    }
-    ab = abs(ab);
-    if (ab>40) now_status = BOILING;
-  //}
+
+      ab = abs(ab);
+      //Serial.println("abs");
+      //Serial.println(String(ab));
+      if (setboil){
+        if (ab>15) now_status = BOILING;
+      }
+    //}
 }
 
+void getEeprom(){
+  Serial.println("EEPROM настройки");
+  /*
+  Serial.println(EEPROM.read(0x10));
+  Serial.println(EEPROM.read(0x11));
+  Serial.println(EEPROM.read(0x12));
+  Serial.println(EEPROM.read(0x13));
+  Serial.println(EEPROM.read(0x14));
+  Serial.println(EEPROM.read(0x15));*/
+}
